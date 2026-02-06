@@ -1,73 +1,85 @@
 #include <Arduino.h>
 
 #define HEADER_BYTE 0xFA
+#define LIDAR_HEADER 0x54
+#define LIDAR_VER_LEN 0x2C
 
-// Structure for a single point in the packet
-struct PointData {
-    uint16_t angle; // Angle * 100
-    uint16_t dist;  // Distance in mm
-    uint8_t intensity;
+// CRC8 Table from LDROBOT documentation / Standard One-Wire CRC
+static const uint8_t CrcTable[256] = {
+    0x00, 0x4d, 0x9a, 0xd7, 0x79, 0x34, 0xe3, 0xae, 0xf2, 0xbf, 0x68, 0x25, 0x8b, 0xc6, 0x11, 0x5c, 0xa9, 0xe4, 0x33, 0x7e, 0xd0, 0x9d, 0x4a, 0x07, 0x5b, 0x16, 0xc1, 0x8c, 0x22, 0x6f, 0xb8, 0xf5,
+    0x1f, 0x52, 0x85, 0xc8, 0x66, 0x2b, 0xfc, 0xb1, 0xed, 0xa0, 0x77, 0x3a, 0x94, 0xd9, 0x0e, 0x43, 0xb6, 0xfb, 0x2c, 0x61, 0xcf, 0x82, 0x55, 0x18, 0x44, 0x09, 0xde, 0x93, 0x3d, 0x70, 0xa7, 0xea, 0x3e, 0x73, 0xa4,
+    0xe9, 0x47, 0x0a, 0xdd, 0x90, 0xcc, 0x81, 0x56, 0x1b, 0xb5, 0xf8, 0x2f, 0x62, 0x97, 0xda, 0x0d, 0x40, 0xee, 0xa3, 0x74, 0x39, 0x65, 0x28, 0xff, 0xb2, 0x1c, 0x51, 0x86, 0xcb, 0x21, 0x6c, 0xbb, 0xf6, 0x58, 0x15, 0xc2,
+    0x8f, 0xd3, 0x9e, 0x49, 0x04, 0xaa, 0xe7, 0x30, 0x7d, 0x88, 0xc5, 0x12, 0x5f, 0xf1, 0xbc, 0x6b, 0x26, 0x7a, 0x37, 0xe0, 0xad, 0x03, 0x4e, 0x99, 0xd4, 0x7c, 0x31, 0xe6, 0xab, 0x05, 0x48, 0x9f, 0xd2, 0x8e, 0xc3, 0x14,
+    0x59, 0xf7, 0xba, 0x6d, 0x20, 0xd5, 0x98, 0x4f, 0x02, 0xac, 0xe1, 0x36, 0x7b, 0x27, 0x6a, 0xbd, 0xf0, 0x5e, 0x13, 0xc4, 0x89, 0x63, 0x2e, 0xf9, 0xb4, 0x1a, 0x57, 0x80, 0xcd, 0x91, 0xdc, 0x0b, 0x46, 0xe8, 0xa5, 0x72,
+    0x3f, 0xca, 0x87, 0x50, 0x1d, 0xb3, 0xfe, 0x29, 0x64, 0x38, 0x75, 0xa2, 0xef, 0x41, 0x0c, 0xdb, 0x96, 0x42, 0x0f, 0xd8, 0x95, 0x3b, 0x76, 0xa1, 0xec, 0xb0, 0xfd, 0x2a, 0x67, 0xc9, 0x84, 0x53, 0x1e, 0xeb, 0xa6, 0x71,
+    0x3c, 0x92, 0xdf, 0x08, 0x45, 0x19, 0x54, 0x83, 0xce, 0x60, 0x2d, 0xfa, 0xb7, 0x5d, 0x10, 0xc7, 0x8a, 0x24, 0x69, 0xbe, 0xf3, 0xaf, 0xe2, 0x35, 0x78, 0xd6, 0x9b, 0x4c, 0x01, 0xf4, 0xb9, 0x6e, 0x23, 0x8d, 0xc0, 0x17,
+    0x5a, 0x06, 0x4b, 0x9c, 0xd1, 0x7f, 0x32, 0xe5, 0xa8
 };
 
 void setup() {
-  Serial.begin(230400);   // High speed for binary data
-  Serial1.begin(230400);  // LD19 LiDAR native speed
+  Serial.begin(230400);   
+  Serial1.begin(230400); 
   
-  // Optional: Blink LED to indicate start
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(100);
-  digitalWrite(LED_BUILTIN, LOW);
 }
 
 void loop() {
   if (Serial1.available() >= 47) {
-    if (Serial1.read() == 0x54) { // Header START_BYTE
-      // VER_LEN is usually 0x2C (12 points), but we just read the block
+    // 1. Check Header Byte 0 (0x54)
+    if (Serial1.read() == LIDAR_HEADER) { 
+      
+      // 2. Read remaining 46 bytes
       uint8_t buffer[46];
       Serial1.readBytes(buffer, 46);
-      
-      // Calculate start and end angles
-      // Protocol: Angle is in 0.01 degrees resolution
-      float start_angle = ((buffer[3] << 8) | buffer[2]) * 0.01;
-      float end_angle = ((buffer[41] << 8) | buffer[40]) * 0.01;
-      
-      // Handle the 360-degree wrap-around case
-      float diff = end_angle - start_angle;
-      if (diff < 0) {
-        diff += 360;
+
+      // 3. Check Header Byte 1 (0x2C) - Critical!
+      if (buffer[0] != LIDAR_VER_LEN) {
+        return; // Invalid packet
+      }
+
+      // 4. Calculate CRC
+      uint8_t crc = 0;
+      crc = CrcTable[(crc ^ LIDAR_HEADER) & 0xff]; // Include Byte 0
+      for (int i = 0; i < 45; i++) {               // Include first 45 bytes of buffer
+        crc = CrcTable[(crc ^ buffer[i]) & 0xff];
       }
       
-      // Calculate step per point (12 points total)
+      // 5. Verify CRC (Last byte buffer[45] is the checksum)
+      if (crc != buffer[45]) {
+         return; // Corrupted packet -> Ignore
+      }
+
+      // === PACKET VALID ===
+      
+      // Calculate angles
+      // Byte 4-5 in packet -> Buffer[3-4]
+      float start_angle = ((buffer[4] << 8) | buffer[3]) * 0.01;
+      // Byte 42-43 in packet -> Buffer[41-42]
+      float end_angle = ((buffer[42] << 8) | buffer[41]) * 0.01;
+      
+      if (start_angle > 360 || end_angle > 360) return; // Sanity check
+
+      float diff = end_angle - start_angle;
+      if (diff < 0) diff += 360;
       float step = diff / 11.0;
       
-      // Prepare binary packet header
+      // Send header
       Serial.write(HEADER_BYTE);
       Serial.write(HEADER_BYTE);
       
-      // Process and send 12 points
       for (int i = 0; i < 12; i++) {
-        // Extract distance and intensity
-        uint16_t dist = (buffer[5 + i*3] << 8) | buffer[4 + i*3];
-        uint8_t intensity = buffer[6 + i*3];
+        uint16_t dist = (buffer[6 + i*3] << 8) | buffer[5 + i*3];
+        uint8_t intensity = buffer[7 + i*3]; // Corrected index logic from library
         
-        // Interpolate angle
         float current_angle = start_angle + (step * i);
-        if (current_angle >= 360) {
-          current_angle -= 360;
-        }
+        if (current_angle >= 360) current_angle -= 360;
         
-        // Pack angle as uint16 (x100 to keep precision)
         uint16_t angle_packed = (uint16_t)(current_angle * 100);
         
-        // Send 5 bytes per point: Angle(2) + Dist(2) + Intensity(1)
-        // Little Endian is standard for Arduino
         Serial.write((uint8_t)(angle_packed & 0xFF));
         Serial.write((uint8_t)(angle_packed >> 8));
-        
         Serial.write((uint8_t)(dist & 0xFF));
         Serial.write((uint8_t)(dist >> 8));
-        
         Serial.write(intensity);
       }
     }

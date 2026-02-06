@@ -11,6 +11,7 @@ SERIAL_PORT = 'COM10'  # Adjust this to your specific COM port
 BAUD_RATE = 230400    # Must match Arduino
 MAX_POINTS = 2000     # Number of points to keep in the view
 POINT_LIFETIME = 0.5  # Seconds to keep a point before fading/removing (approx)
+MAX_DISTANCE_MM = 80  # Filtre de distance (en mm). Points > 80mm sont ignores.
 
 # === SHARED VARIABLES ===
 # Deque is thread-safe for appends/pops in CPython
@@ -27,8 +28,17 @@ def serial_reader_thread(port):
     try:
         ser = serial.Serial(port, BAUD_RATE, timeout=0.1)
         print(f"Connected to {port} at {BAUD_RATE} baud.")
-    except Exception as e:
-        print(f"Error opening serial port: {e}")
+    except serial.SerialException as e:
+        if "Access is denied" in str(e):
+            print("\n!!! ERREUR CRITIQUE !!!")
+            print(f"Le port {port} est est deja occupe.")
+            print("SOLUTIONS :")
+            print("1. FERMEZ le Moniteur Serie de l'Arduino IDE.")
+            print("2. Fermez Cura, VSCode ou tout autre logiciel utilisant le port.")
+            print("3. Debranchez et rebranchez l'USB.")
+            print("!!!!!!!!!!!!!!!!!!!!!!!\n")
+        else:
+            print(f"Error opening serial port: {e}")
         running = False
         return
 
@@ -57,7 +67,8 @@ def serial_reader_thread(port):
                             # <HHB = Little Endian, UShort, UShort, UByte
                             angle_packed, dist_raw, intensity = struct.unpack_from('<HHB', packet_data, offset)
                             
-                            if dist_raw > 0: # Filter invalid points
+                            # FILTRE DE DISTANCE ICI
+                            if dist_raw > 0 and dist_raw < MAX_DISTANCE_MM: # < 80mm
                                 angle_deg = angle_packed / 100.0
                                 new_points.append((angle_deg, dist_raw, intensity))
                                 

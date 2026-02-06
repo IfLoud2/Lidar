@@ -27,8 +27,6 @@ echo.
 
 py -3.11 python/lidar_viz.py
 
-if %errorlevel% neq 0 (
-    echo.
-    echo Une erreur est survenue lors de l'execution.
-    pause
-)
+echo.
+echo Application terminee.
+pause
